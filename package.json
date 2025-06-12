@@ -1,0 +1,16 @@
+{
+  "name": "live-match-timer-api",
+  "version": "1.0.0",
+  "description": "Live match timer using Express and Socket.IO",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "body-parser": "^1.20.2",
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2"
+  }
+}

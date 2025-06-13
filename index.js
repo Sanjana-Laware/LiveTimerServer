@@ -1,9 +1,8 @@
+// Required dependencies
 const express = require('express');
 const http = require('http');
 const socketIO = require('socket.io');
 const cors = require('cors');
-const bodyParser = require('body-parser');
-
 const app = express();
 const server = http.createServer(app);
 const io = socketIO(server, {
@@ -12,6 +11,7 @@ const io = socketIO(server, {
     methods: ['GET', 'POST']
   }
 });
+const bodyParser = require('body-parser');
 
 app.use(cors());
 app.use(bodyParser.json());
@@ -19,62 +19,48 @@ app.use(bodyParser.json());
 // In-memory cache
 const matchTimers = new Map();
 
-// Converts "1:48" → 108 seconds
+// Utility: Convert time string ("4:00") to seconds
 const timeStringToSeconds = (str) => {
   const [min, sec] = str.split(':').map(Number);
   return (min * 60) + (sec || 0);
 };
 
-// Converts 108 → "01:48"
+// Utility: Convert seconds to "MM:SS"
 const secondsToTimeString = (sec) => {
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-
-  const mm = String(m).padStart(2, '0');
-  const ss = String(s).padStart(2, '0');
-
-  if (h > 0) {
-    const hh = String(h).padStart(2, '0');
-    return `${hh}:${mm}:${ss}`; // Show full format if hours > 0
-  }
-
-  return `${mm}:${ss}`; // Show only MM:SS if hours = 0
+  const m = String(Math.floor(sec / 60)).padStart(2, '0');
+  const s = String(sec % 60).padStart(2, '0');
+  return `${m}:${s}`;
 };
-
 
 // POST /start-timer
 app.post('/start-timer', (req, res) => {
-  const { AwayTeamId, HomeTeamId, LatestEvent, EventStartTiming } = req.body;
+  const { AwayTeamId, HomeTeamId, LatestEvent } = req.body;
   const matchKey = `${AwayTeamId}-${HomeTeamId}`;
 
-  if (!AwayTeamId || !HomeTeamId || !LatestEvent || !EventStartTiming) {
-    return res.status(400).json({ error: 'Missing required fields' });
+  if (!AwayTeamId || !HomeTeamId || !LatestEvent) {
+    return res.status(400).json({ error: 'Invalid request body' });
   }
 
-  const now = new Date().getTime();
-  const eventStartMs = new Date(EventStartTiming).getTime();
-  if (isNaN(eventStartMs)) {
-    return res.status(400).json({ error: 'Invalid EventStartTiming format' });
+  const now = Date.now();
+  const newBaseSeconds = timeStringToSeconds(LatestEvent);
+
+  const existing = matchTimers.get(matchKey);
+  const shouldUpdate = !existing || existing.baseSeconds !== newBaseSeconds;
+
+  if (shouldUpdate) {
+    matchTimers.set(matchKey, { startTime: now, baseSeconds: newBaseSeconds });
+
+    // Emit immediately to all clients
+    const updatedTimer = secondsToTimeString(newBaseSeconds);
+    io.emit('timer-update', { matchKey, timer: updatedTimer });
   }
 
-  const eventElapsed = Math.floor((now - eventStartMs) / 1000); // in seconds
-  const latestEventSec = timeStringToSeconds(LatestEvent);
-  const adjustedBaseSeconds = latestEventSec + eventElapsed;
-
-  // Always update matchTimer
-  matchTimers.set(matchKey, {
-    startTime: now,
-    baseSeconds: adjustedBaseSeconds
-  });
-
-  const timerString = secondsToTimeString(adjustedBaseSeconds);
-  io.emit('timer-update', { matchKey, timer: timerString });
-
-  return res.json({ timer: timerString });
+  const { startTime, baseSeconds } = matchTimers.get(matchKey);
+  const elapsed = Math.floor((now - startTime) / 1000);
+  return res.json({ timer: secondsToTimeString(baseSeconds + elapsed) });
 });
 
-// WebSocket live timer
+// WebSocket: Send updates to clients
 io.on('connection', (socket) => {
   console.log('Client connected');
 
@@ -82,22 +68,18 @@ io.on('connection', (socket) => {
     const matchKey = `${AwayTeamId}-${HomeTeamId}`;
 
     const interval = setInterval(() => {
-      const match = matchTimers.get(matchKey);
-      if (!match) return;
+      const matchInfo = matchTimers.get(matchKey);
+      if (!matchInfo) return;
 
-      const now = Date.now();
-      const elapsed = Math.floor((now - match.startTime) / 1000); // seconds since server stored
-      const totalSeconds = match.baseSeconds + elapsed;
-
-      const timer = secondsToTimeString(totalSeconds);
+      const { startTime, baseSeconds } = matchInfo;
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const timer = secondsToTimeString(baseSeconds + elapsed);
       socket.emit('timer-update', { matchKey, timer });
     }, 1000);
 
-    socket.on('disconnect', () => {
-      clearInterval(interval);
-      console.log('Client disconnected');
-    });
+    socket.on('disconnect', () => clearInterval(interval));
   });
 });
 
+// Start the server
 server.listen(4000, () => console.log('Server running on http://localhost:4000'));
